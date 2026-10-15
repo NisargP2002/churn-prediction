@@ -1,8 +1,23 @@
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing import Literal
 
 
 class CustomerFeatures(BaseModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "tenure": 3,
+                "MonthlyCharges": 89.5,
+                "TotalCharges": 268.5,
+                "Contract": 0,
+                "InternetService": 2,
+                "PaymentMethod": 0,
+                "NumServices": 2,
+                "NumProtectiveServices": 0,
+            }
+        }
+    )
+
     tenure:          int   = Field(..., ge=0, le=72)
     MonthlyCharges:  float = Field(..., ge=0, le=200)
     TotalCharges:    float = Field(..., ge=0)
@@ -11,7 +26,7 @@ class CustomerFeatures(BaseModel):
     PaymentMethod:   int   = Field(..., ge=0, le=3)
     NumServices:          int = Field(..., ge=0, le=8)
     NumProtectiveServices: int = Field(..., ge=0, le=4)
-    IsNewCustomer:   int   = Field(..., ge=0, le=1)
+    IsNewCustomer:   int   = Field(default=0, ge=0, le=1)
     ChargePerTenure: float = Field(default=0.0)
 
     # All remaining features the model expects
@@ -31,51 +46,32 @@ class CustomerFeatures(BaseModel):
     HighRiskFlag:    int = Field(default=0)
     TenureBucket:    int = Field(default=0)
 
-    @validator("IsNewCustomer", always=True, pre=True)
-    def compute_is_new_customer(cls, v, values):
-        return int(values.get("tenure", 0) < 12)
+    @model_validator(mode="after")
+    def derive_training_features(self):
+        self.IsNewCustomer = int(self.tenure < 12)
+        self.ChargePerTenure = (
+            round(self.TotalCharges / self.tenure, 4)
+            if self.tenure > 0
+            else self.MonthlyCharges
+        )
 
-    @validator("ChargePerTenure", always=True, pre=True)
-    def compute_charge_per_tenure(cls, v, values):
-        tenure = values.get("tenure", 0)
-        total_charges = values.get("TotalCharges", 0)
-        monthly_charges = values.get("MonthlyCharges", 0)
-        return round(total_charges / tenure, 4) if tenure > 0 else monthly_charges
+        if self.tenure <= 6:
+            self.TenureBucket = 4
+        elif self.tenure <= 12:
+            self.TenureBucket = 3
+        elif self.tenure <= 24:
+            self.TenureBucket = 2
+        elif self.tenure <= 48:
+            self.TenureBucket = 1
+        else:
+            self.TenureBucket = 0
 
-    @validator("TenureBucket", always=True, pre=True)
-    def compute_tenure_bucket(cls, v, values):
-        tenure = values.get("tenure", 0)
-        if tenure <= 6:
-            return 4
-        if tenure <= 12:
-            return 3
-        if tenure <= 24:
-            return 2
-        if tenure <= 48:
-            return 1
-        return 0
-
-    @validator("HighRiskFlag", always=True, pre=True)
-    def compute_high_risk(cls, v, values):
-        contract = values.get("Contract", 1)
-        new_cust = values.get("IsNewCustomer", 0)
-        internet = values.get("InternetService", 0)
-        return int(contract == 0 and new_cust == 1 and internet == 2)
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "tenure": 3,
-                "MonthlyCharges": 89.5,
-                "TotalCharges": 268.5,
-                "Contract": 0,
-                "InternetService": 2,
-                "PaymentMethod": 0,
-                "NumServices": 2,
-                "NumProtectiveServices": 0,
-                "IsNewCustomer": 1
-            }
-        }
+        self.HighRiskFlag = int(
+            self.Contract == 0
+            and self.IsNewCustomer == 1
+            and self.InternetService == 2
+        )
+        return self
 
 
 class PredictionResponse(BaseModel):
